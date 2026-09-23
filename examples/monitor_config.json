@@ -1,0 +1,50 @@
+{
+  "aoi": {
+    "crs": "EPSG:4326",
+    "geometry": {
+      "coordinates": [
+        [
+          [
+            -70.12,
+            43.65
+          ],
+          [
+            -70.02,
+            43.65
+          ],
+          [
+            -70.02,
+            43.72
+          ],
+          [
+            -70.12,
+            43.72
+          ],
+          [
+            -70.12,
+            43.65
+          ]
+        ]
+      ],
+      "type": "Polygon"
+    },
+    "name": "quarry-north",
+    "properties": {}
+  },
+  "api_url": "https://planetarycomputer.microsoft.com/api/stac/v1",
+  "collections": [
+    "sentinel-2-l2a"
+  ],
+  "composite": false,
+  "end": "2026-09-01",
+  "indices": [
+    "ndvi",
+    "ndwi",
+    "bsi"
+  ],
+  "max_cloud_cover": 30.0,
+  "name": "quarry-north",
+  "output_dir": "./output/quarry-north",
+  "start": "2026-06-01",
+  "target_resolution_m": 10.0
+}
