@@ -19,6 +19,7 @@ from .bands import COLLECTIONS, SENSORS, STAC_APIS, list_aliases, list_collectio
 from .indices import describe_index, list_indices
 from .monitor import MonitorConfig, run_monitor
 from .qgis import list_styles, qgis_usage_notes
+from .signing import list_signers
 from .stac import latest_per_date, search_scenes
 
 
@@ -61,10 +62,14 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     with open(args.config, encoding="utf-8") as handle:
         data = json.load(handle)
     config = MonitorConfig.from_dict(data)
+    if args.signer:
+        config.signer = args.signer
     result = run_monitor(config, progress=print)
     print(f"scenes: {len(result.scenes)}")
     print(f"records: {len(result.records)}")
     print(f"rasters: {len(result.rasters)}")
+    if result.composites:
+        print(f"composites: {len(result.composites)}")
     print(f"report: {result.report_path}")
     print(f"timeseries: {result.timeseries_csv}")
     return 0
@@ -112,6 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_monitor = sub.add_parser("monitor", help="Run a site monitor from a JSON config")
     p_monitor.add_argument("--config", required=True, help="Monitor JSON config file")
+    p_monitor.add_argument(
+        "--signer",
+        default=None,
+        choices=list_signers(),
+        help="URL signer strategy (overrides the config file); "
+        "needed for SAS-protected catalogs such as Planetary Computer",
+    )
     p_monitor.set_defaults(func=cmd_monitor)
 
     p_indices = sub.add_parser("indices", help="List spectral indices")

@@ -35,7 +35,7 @@
   "collections": [
     "sentinel-2-l2a"
   ],
-  "composite": false,
+  "composite": true,
   "end": "2026-09-01",
   "indices": [
     "ndvi",
@@ -46,5 +46,6 @@
   "name": "quarry-north",
   "output_dir": "./output/quarry-north",
   "start": "2026-06-01",
-  "target_resolution_m": 10.0
+  "target_resolution_m": 10.0,
+  "signer": "planetary-computer"
 }

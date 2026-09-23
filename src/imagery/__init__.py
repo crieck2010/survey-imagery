@@ -37,6 +37,16 @@ from .interop import (
 )
 from .io import ensure_dir, write_cog, write_geojson, write_multiband_cog, write_text
 from .monitor import MonitorConfig, MonitorResult, render_report, run_monitor
+from .signing import (
+    SIGNERS,
+    Signer,
+    SignerSpec,
+    SigningError,
+    clear_sign_cache,
+    list_signers,
+    planetary_computer_signer,
+    resolve_signer,
+)
 from .preprocessing import (
     apply_mask,
     clear_fraction,
@@ -55,9 +65,19 @@ from .stac import (
     search_scenes,
     sort_scenes,
 )
-from .timeseries import SceneStats, summarize, write_csv, write_json, zonal_stats
+from .timeseries import (
+    SceneStats,
+    merge_records,
+    read_csv,
+    read_json,
+    series_fieldnames,
+    summarize,
+    write_csv,
+    write_json,
+    zonal_stats,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
@@ -76,7 +96,8 @@ __all__ = [
     # composites
     "best_scene_index", "coverage_fraction", "temporal_composite", "valid_pixel_count",
     # timeseries
-    "SceneStats", "summarize", "write_csv", "write_json", "zonal_stats",
+    "SceneStats", "merge_records", "read_csv", "read_json", "series_fieldnames",
+    "summarize", "write_csv", "write_json", "zonal_stats",
     # stac
     "Scene", "filter_max_cloud", "latest_per_date", "search", "search_scenes",
     "sort_scenes",
@@ -86,6 +107,9 @@ __all__ = [
     "list_styles", "qgis_usage_notes", "style_qml", "write_style_qml",
     # monitor
     "MonitorConfig", "MonitorResult", "render_report", "run_monitor",
+    # signing
+    "SIGNERS", "Signer", "SignerSpec", "SigningError", "clear_sign_cache",
+    "list_signers", "planetary_computer_signer", "resolve_signer",
     # interop
     "as_grid", "check_grid", "crs_from_any", "describe_interop",
     "from_survey_raster", "grid_to_pointcloud_xyz", "to_survey_raster",

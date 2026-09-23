@@ -6,11 +6,11 @@ All imagery used by this engine is **free and open**, processed locally. No Eart
 
 | Name | URL | Auth | Notes |
 |---|---|---|---|
-| Microsoft Planetary Computer | `https://planetarycomputer.microsoft.com/api/stac/v1` | None for search; SAS signature needed for asset reads | Default in the monitor. Sign URLs with the optional `planetary-computer` package and pass it as the monitor's `signer`. |
+| Microsoft Planetary Computer | `https://planetarycomputer.microsoft.com/api/stac/v1` | None for search; SAS signature needed for asset reads | Default in the monitor. Use the built-in signer strategy: `"signer": "planetary-computer"` in the monitor config (or `--signer planetary-computer` on the CLI). The signer handles the SAS endpoint's response shape, retries 429/5xx with backoff, and caches signatures until they expire. |
 | Copernicus Data Space | `https://stac.dataspace.copernicus.eu/v1` | None for search; token needed for downloads | The authoritative Sentinel source; register for a free token at dataspace.copernicus.eu. |
 | USGS LandsatLook | `https://landsatlook.usgs.gov/stac-server` | None | Landsat Collection 2; simplest anonymous access. |
 
-Pass any of these as `--api` / `api_url`. The `Scene.assets` hrefs are used verbatim, so provider quirks (like SAS signing) are handled by the optional `signer` callable rather than baked into the engine.
+Pass any of these as `--api` / `api_url`. The `Scene.assets` hrefs are used verbatim, so provider quirks (like SAS signing) are handled by the `signer` — a callable, or a named strategy from `imagery.signing` (`list_signers()`), serialisable in a JSON config — rather than baked into the engine.
 
 ## Collections
 

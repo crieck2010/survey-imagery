@@ -55,16 +55,27 @@ Public API is re-exported from `imagery` (`src/imagery/__init__.py`). Import fro
 - `temporal_composite(arrays, method="median"|"mean"|"max"|"min")` — NaN-aware stack collapse.
 - `valid_pixel_count(arrays)`, `coverage_fraction(arrays)`, `best_scene_index(arrays)`.
 
+## `imagery.signing` — SAS signers
+
+- `planetary_computer_signer(href)` — sign one href via Planetary Computer's anonymous SAS endpoint. Handles both response shapes (`{"href": ...}` and legacy `{"token": ...}`), retries 429/5xx with exponential backoff, and caches signed URLs until just before their `se=` expiry. `SigningError` on failure.
+- `resolve_signer(spec)` — `None` / callable / registered strategy name → callable. Raises `SigningError` for unknown names.
+- `list_signers()` — registered strategy names (`["planetary-computer"]`).
+- `clear_sign_cache()` — empty the SAS signature cache (tests).
+- `SIGNERS` registry — add your own strategy: `SIGNERS["my-catalog"] = my_signer`.
+
 ## `imagery.timeseries`
 
-- `SceneStats` dataclass — per-scene zonal stats + `to_dict()`.
+- `SceneStats` dataclass — per-scene zonal stats + `to_dict()` / `from_dict()`.
 - `zonal_stats(data, transform, crs, aoi, scene_id="", datetime="", index="", cloud_cover=None)`.
 - `write_csv(records, path)`, `write_json(records, path)`, `summarize(records)`.
+- `read_csv(path)`, `read_json(path)` — load previously written series files.
+- `merge_records(previous, new)` — union keyed by `(scene_id, index)`; new records replace old ones with the same key; result sorted by `(datetime, index, scene_id)`.
+- `series_fieldnames()` — canonical CSV column order.
 
 ## `imagery.monitor` — site monitor
 
-- `MonitorConfig(name, aoi, collections, indices, output_dir, api_url=..., start=..., end=..., max_cloud_cover=40.0, target_resolution_m=None, composite=False, signer=None)` — `start` defaults to 90 days before `end` (today). `.to_dict()` / `.from_dict()` (signer not serialised).
-- `run_monitor(config, progress=None)` → `MonitorResult(scenes, records, rasters, report_path, timeseries_csv, summary)`.
+- `MonitorConfig(name, aoi, collections, indices, output_dir, api_url=..., start=..., end=..., max_cloud_cover=40.0, target_resolution_m=None, composite=False, signer=None)` — `start` defaults to 90 days before `end` (today). `signer` accepts a callable, a registered strategy name (`"planetary-computer"`), or `None`. `.to_dict()` / `.from_dict()` round-trip strategy names (raw callables can't be JSON-serialised and are stored as `None`).
+- `run_monitor(config, progress=None)` → `MonitorResult(scenes, records, rasters, report_path, timeseries_csv, summary, composites)`. Existing `timeseries.csv` is loaded, merged with new records (repeats replace, nothing duplicates), and rewritten. With `composite=True`, per-index median composites are written from the grid-compatible per-scene rasters.
 - `process_scene(scene, config, out_dir)` — single-scene pipeline, usable standalone.
 - `render_report(config, scenes, summary)` → Markdown.
 - `MonitorError` when nothing is found or config is invalid.
@@ -90,5 +101,5 @@ Public API is re-exported from `imagery` (`src/imagery/__init__.py`). Import fro
 ## CLI — `survey-imagery`
 
 - `search --bbox W S E N --collection … --start … --end … [--api …] [--max-cloud …] [--limit …]`
-- `monitor --config config.json`
+- `monitor --config config.json [--signer planetary-computer]` — `--signer` overrides the config file
 - `indices`, `info`, `--version`

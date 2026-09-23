@@ -10,14 +10,15 @@ end date is the "refresh with each pass" loop.
 
 from __future__ import annotations
 
+import csv
 import datetime as _dt
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .acquisition import BandData, read_stack
+from .acquisition import AcquisitionError, BandData, read_band, read_stack
 from .aoi import AOI
 from .bands import (
     asset_key,
@@ -26,6 +27,7 @@ from .bands import (
     mask_alias,
     reflectance_scale_offset,
 )
+from .composites import temporal_composite
 from .indices import compute, list_indices, required_bands
 from .io import ensure_dir, write_cog, write_geojson, write_text
 from .preprocessing import (
@@ -36,8 +38,18 @@ from .preprocessing import (
     valid_fraction,
 )
 from .qgis import list_styles, write_style_qml
+from .signing import SignerSpec, SigningError, resolve_signer
 from .stac import Scene, filter_max_cloud, latest_per_date, search_scenes
-from .timeseries import SceneStats, summarize, write_csv, write_json, zonal_stats
+from .timeseries import (
+    SceneStats,
+    merge_records,
+    read_csv,
+    series_fieldnames,
+    summarize,
+    write_csv,
+    write_json,
+    zonal_stats,
+)
 
 
 class MonitorError(RuntimeError):
@@ -46,7 +58,13 @@ class MonitorError(RuntimeError):
 
 @dataclass
 class MonitorConfig:
-    """Everything a site monitor needs, serialisable to JSON."""
+    """Everything a site monitor needs, serialisable to JSON.
+
+    ``signer`` accepts a callable, a registered strategy name (see
+    :mod:`imagery.signing`, e.g. ``"planetary-computer"``), or ``None``.
+    Strategy names round-trip through :meth:`to_dict` / :meth:`from_dict`,
+    so a JSON config file can drive SAS-protected catalogs.
+    """
 
     name: str
     aoi: AOI
@@ -59,7 +77,7 @@ class MonitorConfig:
     max_cloud_cover: Optional[float] = 40.0
     target_resolution_m: Optional[float] = None
     composite: bool = False
-    signer: Optional[Callable[[str], str]] = None  # not serialised
+    signer: SignerSpec = None
 
     def __post_init__(self) -> None:
         if not self.collections:
@@ -88,13 +106,21 @@ class MonitorConfig:
             "max_cloud_cover": self.max_cloud_cover,
             "target_resolution_m": self.target_resolution_m,
             "composite": self.composite,
+            # Named signer strategies serialise; raw callables cannot.
+            "signer": self.signer if isinstance(self.signer, str) else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MonitorConfig":
         data = dict(data)
         data["aoi"] = AOI.from_dict(data["aoi"])
-        return cls(**{k: v for k, v in data.items() if k != "signer"})
+        signer = data.get("signer")
+        if signer is not None and not isinstance(signer, str):
+            raise MonitorError(
+                "signer in a JSON config must be a strategy name "
+                f"(e.g. 'planetary-computer'), got {type(signer).__name__}"
+            )
+        return cls(**data)
 
 
 @dataclass
@@ -106,6 +132,7 @@ class MonitorResult:
     report_path: str
     timeseries_csv: str
     summary: Dict[str, Any]
+    composites: List[str] = field(default_factory=list)
 
 
 def _scene_assets(scene: Scene) -> Dict[str, str]:
@@ -135,7 +162,7 @@ def process_scene(
         aoi=config.aoi,
         target_resolution_m=config.target_resolution_m,
         collection=collection,
-        signer=config.signer,
+        signer=resolve_signer(config.signer),
     )
     scale, offset = reflectance_scale_offset(collection)
     refl = {a: to_reflectance(b.data, scale, offset) for a, b in stack.items()}
@@ -211,35 +238,124 @@ def run_monitor(
 
     all_records: List[SceneStats] = []
     rasters: List[str] = []
+    per_index_rasters: Dict[str, List[str]] = {idx: [] for idx in config.indices}
     for i, scene in enumerate(scenes, start=1):
         log(f"processing scene {i}/{len(scenes)}: {scene.id}")
         try:
             records = process_scene(scene, config, out_dir)
-        except MonitorError as exc:
+        except (MonitorError, AcquisitionError, SigningError) as exc:
+            # One bad scene (unreadable asset, expired signature, ...) must
+            # not abort the whole refresh; it is logged and skipped.
             log(f"  skipped: {exc}")
             continue
         all_records.extend(records)
         date_tag = scene.datetime[:10]
-        rasters.extend(
-            os.path.join(out_dir, "rasters", f"{config.name}_{idx}_{date_tag}.tif")
-            for idx in config.indices
-        )
+        for idx in config.indices:
+            path = os.path.join(
+                out_dir, "rasters", f"{config.name}_{idx}_{date_tag}.tif"
+            )
+            rasters.append(path)
+            per_index_rasters[idx].append(path)
 
-    csv_path = write_csv(all_records, os.path.join(out_dir, "timeseries.csv"))
-    write_json(all_records, os.path.join(out_dir, "timeseries.json"))
-    summary = summarize(all_records)
+    composites: List[str] = []
+    if config.composite:
+        composites = _write_composites(out_dir, config, per_index_rasters, log)
+        rasters.extend(composites)
+
+    csv_path = os.path.join(out_dir, "timeseries.csv")
+    json_path = os.path.join(out_dir, "timeseries.json")
+    previous = read_csv(csv_path) if os.path.exists(csv_path) else []
+    merged = merge_records(previous, all_records)
+    if merged:
+        write_csv(merged, csv_path)
+    else:
+        _write_header_only_csv(csv_path)
+    write_json(merged, json_path)
+    summary = summarize(merged)
+    summary["composites"] = composites
     report_path = os.path.join(out_dir, "report.md")
     write_text(report_path, render_report(config, scenes, summary))
 
     return MonitorResult(
         config_name=config.name,
         scenes=scenes,
-        records=all_records,
+        records=merged,
         rasters=rasters,
         report_path=report_path,
         timeseries_csv=csv_path,
         summary=summary,
+        composites=composites,
     )
+
+
+def _write_header_only_csv(path: str) -> str:
+    """Write a valid-but-empty series file so tooling always sees a CSV."""
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(series_fieldnames())
+    return path
+
+
+def _grid_key(band: BandData) -> Tuple[Tuple[int, int], Tuple[float, ...], str]:
+    t = band.transform
+    coeffs = (t.a, t.b, t.c, t.d, t.e, t.f) if hasattr(t, "a") else tuple(t)
+    return (
+        (int(band.data.shape[0]), int(band.data.shape[1])),
+        tuple(float(v) for v in coeffs),
+        str(band.crs),
+    )
+
+
+def _write_composites(
+    out_dir: str,
+    config: MonitorConfig,
+    per_index_rasters: Dict[str, List[str]],
+    log: Callable[[str], None],
+) -> List[str]:
+    """Median temporal composite per index from the per-scene rasters.
+
+    Only rasters sharing an identical grid are composited together (scenes
+    from neighbouring UTM tiles can differ); the largest grid-compatible
+    group wins and the rest are logged and skipped.
+    """
+    paths: List[str] = []
+    for index_name, raster_paths in per_index_rasters.items():
+        existing = [p for p in raster_paths if os.path.exists(p)]
+        if len(existing) < 2:
+            log(f"  composite {index_name}: need 2+ scenes, have {len(existing)}")
+            continue
+        bands = [read_band(p) for p in existing]
+        groups: Dict[
+            Tuple[Tuple[int, int], Tuple[float, ...], str], List[BandData]
+        ] = {}
+        for band in bands:
+            groups.setdefault(_grid_key(band), []).append(band)
+        key = max(groups, key=lambda k: len(groups[k]))
+        group = groups[key]
+        skipped = len(bands) - len(group)
+        if skipped:
+            log(
+                f"  composite {index_name}: skipped {skipped} scene(s) on "
+                "a different grid"
+            )
+        if len(group) < 2:
+            log(f"  composite {index_name}: no grid-compatible pair found")
+            continue
+        composite = temporal_composite(
+            [b.data for b in group], method="median"
+        )
+        ref = group[0]
+        fname = (
+            f"{config.name}_{index_name}_composite_"
+            f"{config.start}_{config.end}.tif"
+        )
+        out_path = os.path.join(out_dir, "rasters", fname)
+        write_cog(out_path, composite, ref.transform, ref.crs)
+        style = index_name if index_name in list_styles() else "ndvi"
+        write_style_qml(out_path.replace(".tif", ".qml"), style=style)
+        log(f"  composite {index_name}: {fname} from {len(group)} scenes")
+        paths.append(out_path)
+    return paths
 
 
 def render_report(
@@ -290,6 +406,18 @@ def render_report(
         "- `rasters/`: per-scene Cloud-Optimized GeoTIFFs + .qml styles for QGIS",
         "- `timeseries.csv` / `timeseries.json`: per-scene zonal statistics",
         "- `aoi.geojson`: the monitored site footprint",
+    ]
+    composites = summary.get("composites") or []
+    if composites:
+        lines += [
+            "",
+            "## Temporal composites",
+            "",
+            "Median composites across the grid-compatible scenes:",
+            "",
+        ]
+        lines += [f"- `{os.path.basename(p)}`" for p in composites]
+    lines += [
         "",
         "_Generated by survey-imagery site monitor._",
     ]

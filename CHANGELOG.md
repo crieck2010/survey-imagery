@@ -2,6 +2,33 @@
 
 All notable changes to `survey-imagery`. Follows semantic versioning.
 
+## [0.1.1] - 2026-09-23
+### Added
+- `signing`: named URL-signer strategies (`imagery.signing`). `planetary-computer`
+  signs via the anonymous SAS endpoint, handling both the current `{"href": ...}`
+  and legacy `{"token": ...}` response shapes; retries 429/5xx with exponential
+  backoff; caches signatures until just before their `se=` expiry.
+  `resolve_signer()`, `list_signers()`, `clear_sign_cache()`, `SIGNERS` registry.
+- `MonitorConfig.signer` now accepts a registered strategy name
+  (e.g. `"planetary-computer"`), which round-trips through `.to_dict()` /
+  `.from_dict()` and the `monitor` CLI (`--signer` flag also overrides the config).
+- Monitor temporal composites: `composite=True` writes a per-index median
+  composite COG + QML over the grid-compatible per-scene rasters.
+- `timeseries`: `SceneStats.from_dict()`, `read_csv()`, `read_json()`,
+  `merge_records()`, `series_fieldnames()` — monitor re-runs merge new records
+  into the existing series keyed by `(scene_id, index)`; repeats and reprocessed
+  scenes replace their earlier rows instead of duplicating them.
+### Fixed
+- `MonitorConfig.composite` was previously ignored; it now produces composite
+  COGs instead of silently doing nothing.
+- Monitor re-runs previously discarded prior history by rewriting
+  `timeseries.csv` from scratch; history is now preserved and merged.
+### Verified
+- Live smoke test against real Sentinel-2 L2A data from Planetary Computer:
+  STAC search, windowed AOI read, SCL masking, NDVI, and a 3-scene monitor run
+  with composites and series merging, using the built-in `planetary-computer`
+  signer.
+
 ## [0.1.0] - 2026-09-23
 ### Added
 - Initial release: satellite imagery engine for surveying + remote sensing.

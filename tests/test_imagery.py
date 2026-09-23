@@ -4,8 +4,10 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
+import requests
 
 import imagery
 from imagery import (
@@ -26,6 +28,7 @@ from imagery import io as io_mod
 from imagery import monitor as monitor_mod
 from imagery import preprocessing as preprocessing_mod
 from imagery import qgis as qgis_mod
+from imagery import signing as signing_mod
 from imagery import stac as stac_mod
 from imagery import timeseries as timeseries_mod
 from imagery.acquisition import estimate_read_size_mb, read_band, read_stack
@@ -483,6 +486,64 @@ class TestTimeseries(unittest.TestCase):
                 payload = json.load(handle)
             self.assertEqual(payload[0]["index"], "ndvi")
 
+    def test_from_dict_roundtrip(self):
+        rec = SceneStats("s1", "2026-06-01T00:00:00Z", "ndvi", 0.5, 0.5, 0.1,
+                         0.3, 0.7, 0.35, 0.65, 100, 120, 5.0)
+        self.assertEqual(SceneStats.from_dict(rec.to_dict()), rec)
+        # empty cloud cover cell -> None
+        row = rec.to_dict()
+        row["cloud_cover"] = ""
+        self.assertIsNone(SceneStats.from_dict(row).cloud_cover)
+
+    def test_read_csv_roundtrip(self):
+        recs = [
+            SceneStats("s1", "2026-06-01T00:00:00Z", "ndvi", 0.4, 0.4, 0.0,
+                       0.4, 0.4, 0.4, 0.4, 10, 10, 2.5),
+            SceneStats("s2", "2026-06-06T00:00:00Z", "ndvi", 0.6, 0.6, 0.0,
+                       0.6, 0.6, 0.6, 0.6, 10, 10, None),
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            path = timeseries_mod.write_csv(recs, os.path.join(d, "ts.csv"))
+            back = timeseries_mod.read_csv(path)
+        self.assertEqual(back, recs)
+
+    def test_read_json_roundtrip(self):
+        recs = [
+            SceneStats("s1", "2026-06-01T00:00:00Z", "ndvi", 0.4, 0.4, 0.0,
+                       0.4, 0.4, 0.4, 0.4, 10, 10),
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            path = timeseries_mod.write_json(recs, os.path.join(d, "ts.json"))
+            back = timeseries_mod.read_json(path)
+        self.assertEqual(back, recs)
+
+    def test_merge_records(self):
+        old = [
+            SceneStats("s1", "2026-06-01T00:00:00Z", "ndvi", 0.4, 0.4, 0.0,
+                       0.4, 0.4, 0.4, 0.4, 10, 10),
+            SceneStats("s2", "2026-06-06T00:00:00Z", "ndvi", 0.6, 0.6, 0.0,
+                       0.6, 0.6, 0.6, 0.6, 10, 10),
+        ]
+        # s2 reprocessed with a better mask; s3 is brand new
+        new = [
+            SceneStats("s2", "2026-06-06T00:00:00Z", "ndvi", 0.7, 0.7, 0.0,
+                       0.7, 0.7, 0.7, 0.7, 10, 10),
+            SceneStats("s3", "2026-05-28T00:00:00Z", "ndvi", 0.3, 0.3, 0.0,
+                       0.3, 0.3, 0.3, 0.3, 10, 10),
+        ]
+        merged = timeseries_mod.merge_records(old, new)
+        self.assertEqual(len(merged), 3)  # no duplicates
+        by_id = {r.scene_id: r for r in merged}
+        self.assertAlmostEqual(by_id["s2"].mean, 0.7)  # new wins
+        # sorted by (datetime, index, scene_id)
+        self.assertEqual([r.scene_id for r in merged], ["s3", "s1", "s2"])
+
+    def test_merge_records_empty(self):
+        rec = SceneStats("s1", "2026-06-01T00:00:00Z", "ndvi", 0.4, 0.4, 0.0,
+                         0.4, 0.4, 0.4, 0.4, 10, 10)
+        self.assertEqual(timeseries_mod.merge_records([], [rec]), [rec])
+        self.assertEqual(timeseries_mod.merge_records([rec], []), [rec])
+
     def test_summarize(self):
         recs = [
             SceneStats("s1", "2026-06-01T00:00:00Z", "ndvi", 0.4, 0.4, 0.0,
@@ -619,7 +680,7 @@ class TestInterop(unittest.TestCase):
 
 
 class TestMonitor(unittest.TestCase):
-    def _scene(self, tmpdir):
+    def _scene(self, tmpdir, scene_id="S2_TEST", dt="2026-06-01T10:00:00Z"):
         red = _temp_tif(np.full((10, 10), 2000, dtype=np.uint16),
                         (0.001, 0.0, -70.0, 0.0, -0.001, 44.0))
         nir = _temp_tif(np.full((10, 10), 6000, dtype=np.uint16),
@@ -630,8 +691,8 @@ class TestMonitor(unittest.TestCase):
         self.addCleanup(os.remove, nir)
         self.addCleanup(os.remove, scl)
         return Scene(
-            id="S2_TEST", collection="sentinel-2-l2a",
-            datetime="2026-06-01T10:00:00Z", cloud_cover=5.0,
+            id=scene_id, collection="sentinel-2-l2a",
+            datetime=dt, cloud_cover=5.0,
             bbox=[-70.0, 43.99, -69.99, 44.0],
             assets={"red": red, "nir": nir, "scl": scl},
         )
@@ -711,6 +772,199 @@ class TestMonitor(unittest.TestCase):
         self.assertIn("demo", report)
         self.assertIn("S1", report)
 
+    def test_config_signer_roundtrip(self):
+        cfg = MonitorConfig(name="demo", aoi=from_bbox(-70, 43, -69, 44),
+                            collections=["sentinel-2-l2a"], indices=["ndvi"],
+                            output_dir="/tmp/demo",
+                            signer="planetary-computer")
+        self.assertEqual(cfg.to_dict()["signer"], "planetary-computer")
+        cfg2 = MonitorConfig.from_dict(cfg.to_dict())
+        self.assertEqual(cfg2.signer, "planetary-computer")
+        self.assertIs(
+            signing_mod.resolve_signer(cfg2.signer),
+            signing_mod.planetary_computer_signer,
+        )
+
+    def test_config_signer_callable_not_serialised(self):
+        cfg = MonitorConfig(name="demo", aoi=from_bbox(-70, 43, -69, 44),
+                            collections=["sentinel-2-l2a"], indices=["ndvi"],
+                            output_dir="/tmp/demo",
+                            signer=lambda href: href)
+        self.assertIsNone(cfg.to_dict()["signer"])
+
+    def test_config_signer_invalid_rejected(self):
+        cfg = MonitorConfig(name="demo", aoi=from_bbox(-70, 43, -69, 44),
+                            collections=["sentinel-2-l2a"], indices=["ndvi"],
+                            output_dir="/tmp/demo")
+        data = cfg.to_dict()
+        data["signer"] = 123
+        with self.assertRaises(monitor_mod.MonitorError):
+            MonitorConfig.from_dict(data)
+
+    def _run_with_scenes(self, d, scenes, **cfg_kwargs):
+        orig = monitor_mod.search_scenes
+        monitor_mod.search_scenes = lambda *a, **k: list(scenes)
+        self.addCleanup(setattr, monitor_mod, "search_scenes", orig)
+        kwargs = dict(
+            name="demo",
+            aoi=from_bbox(-70.0, 43.99, -69.99, 44.0),
+            collections=["sentinel-2-l2a"],
+            indices=["ndvi"],
+            output_dir=os.path.join(d, "out"),
+            start="2026-06-01", end="2026-06-03",
+        )
+        kwargs.update(cfg_kwargs)
+        return monitor_mod.run_monitor(MonitorConfig(**kwargs))
+
+    def test_run_monitor_merges_on_rerun(self):
+        with tempfile.TemporaryDirectory() as d:
+            scene = self._scene(d)
+            first = self._run_with_scenes(d, [scene])
+            self.assertEqual(len(first.records), 1)
+            second = self._run_with_scenes(d, [scene])
+            # Re-running over the same window must not duplicate rows.
+            self.assertEqual(len(second.records), 1)
+            with open(second.timeseries_csv, newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["scene_id"], "S2_TEST")
+
+    def test_run_monitor_composite(self):
+        with tempfile.TemporaryDirectory() as d:
+            scenes = [
+                self._scene(d, "S2_A", "2026-06-01T10:00:00Z"),
+                self._scene(d, "S2_B", "2026-06-02T10:00:00Z"),
+            ]
+            result = self._run_with_scenes(d, scenes, composite=True)
+            self.assertEqual(len(result.composites), 1)
+            comp = result.composites[0]
+            self.assertTrue(os.path.exists(comp))
+            self.assertIn("composite", os.path.basename(comp))
+            self.assertTrue(os.path.exists(comp.replace(".tif", ".qml")))
+            import rasterio
+            with rasterio.open(comp) as src:
+                arr = src.read(1)
+            # red 0.2 / nir 0.6 -> ndvi 0.5 in both scenes -> median 0.5
+            self.assertAlmostEqual(float(arr[5, 5]), 0.5, places=4)
+            self.assertIn("composites", result.summary)
+
+    def test_run_monitor_composite_single_scene_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = self._run_with_scenes(d, [self._scene(d)], composite=True)
+            self.assertEqual(result.composites, [])
+
+    def test_run_monitor_skips_unreadable_scene(self):
+        with tempfile.TemporaryDirectory() as d:
+            good = self._scene(d, "S2_GOOD", "2026-06-01T10:00:00Z")
+            bad = self._scene(d, "S2_BAD", "2026-06-02T10:00:00Z")
+            bad.assets = {"red": "/nonexistent/red.tif"}  # unreadable
+            orig = monitor_mod.process_scene
+            calls = []
+
+            def fake_process(scene, config, out_dir):
+                calls.append(scene.id)
+                if scene.id == "S2_BAD":
+                    raise monitor_mod.AcquisitionError("boom")
+                return orig(scene, config, out_dir)
+
+            monitor_mod.process_scene = fake_process
+            self.addCleanup(setattr, monitor_mod, "process_scene", orig)
+            result = self._run_with_scenes(d, [good, bad])
+            self.assertEqual(calls, ["S2_GOOD", "S2_BAD"])
+            # The bad scene is skipped; the good one still lands in the series.
+            self.assertEqual([r.scene_id for r in result.records], ["S2_GOOD"])
+
+
+class TestSigning(unittest.TestCase):
+    def setUp(self):
+        signing_mod.clear_sign_cache()
+
+    def _resp(self, payload, status=200):
+        m = mock.Mock()
+        m.status_code = status
+        m.json.return_value = payload
+        if status >= 400:
+            m.raise_for_status.side_effect = requests.HTTPError(f"{status}")
+        return m
+
+    def test_list_signers(self):
+        self.assertIn("planetary-computer", signing_mod.list_signers())
+
+    def test_resolve_none_and_callable(self):
+        self.assertIsNone(signing_mod.resolve_signer(None))
+        fn = lambda href: href  # noqa: E731
+        self.assertIs(fn, signing_mod.resolve_signer(fn))
+
+    def test_resolve_named(self):
+        self.assertIs(
+            signing_mod.resolve_signer("planetary-computer"),
+            signing_mod.planetary_computer_signer,
+        )
+
+    def test_resolve_unknown(self):
+        with self.assertRaises(signing_mod.SigningError):
+            signing_mod.resolve_signer("nope")
+        with self.assertRaises(signing_mod.SigningError):
+            signing_mod.resolve_signer(123)
+
+    def test_signer_href_shape(self):
+        signed = "https://x/signed?se=2030-01-01T00:00:00Z"
+        with mock.patch.object(
+            signing_mod.requests, "get", return_value=self._resp({"href": signed})
+        ) as get:
+            out = signing_mod.planetary_computer_signer("https://x/raw")
+        self.assertEqual(out, signed)
+        get.assert_called_once()
+
+    def test_signer_token_shape(self):
+        with mock.patch.object(
+            signing_mod.requests, "get", return_value=self._resp({"token": "sig=abc"})
+        ):
+            out = signing_mod.planetary_computer_signer("https://x/raw")
+        self.assertEqual(out, "https://x/raw?sig=abc")
+
+    def test_signer_empty_shape_raises(self):
+        with mock.patch.object(
+            signing_mod.requests, "get", return_value=self._resp({})
+        ):
+            with self.assertRaises(signing_mod.SigningError):
+                signing_mod.planetary_computer_signer("https://x/raw")
+
+    def test_signer_retries_429_then_succeeds(self):
+        calls = []
+
+        def fake_get(*_a, **_k):
+            calls.append(1)
+            if len(calls) == 1:
+                return self._resp({}, status=429)
+            return self._resp({"href": "https://x/signed?se=2030-01-01T00:00:00Z"})
+
+        with mock.patch.object(signing_mod.requests, "get", side_effect=fake_get):
+            out = signing_mod.planetary_computer_signer("https://x/raw")
+        self.assertEqual(out, "https://x/signed?se=2030-01-01T00:00:00Z")
+        self.assertEqual(len(calls), 2)
+
+    def test_signer_caches_until_expiry(self):
+        signed = "https://x/signed?se=2030-01-01T00:00:00Z"
+        with mock.patch.object(
+            signing_mod.requests, "get", return_value=self._resp({"href": signed})
+        ) as get:
+            first = signing_mod.planetary_computer_signer("https://x/raw")
+            second = signing_mod.planetary_computer_signer("https://x/raw")
+        self.assertEqual(first, second)
+        get.assert_called_once()  # second call served from cache
+
+    def test_signer_cache_respects_expiry(self):
+        past = "https://x/old?se=2020-01-01T00:00:00Z"
+        fresh = "https://x/new?se=2030-01-01T00:00:00Z"
+        with mock.patch.object(
+            signing_mod.requests, "get", return_value=self._resp({"href": fresh})
+        ) as get:
+            signing_mod._cache_sign("https://x/raw", past)  # expired entry
+            out = signing_mod.planetary_computer_signer("https://x/raw")
+        self.assertEqual(out, fresh)
+        get.assert_called_once()
+
 
 class TestCLI(unittest.TestCase):
     def test_info(self):
@@ -724,15 +978,71 @@ class TestCLI(unittest.TestCase):
             cli_main(["--version"])
         self.assertEqual(ctx.exception.code, 0)
 
+    def test_monitor_signer_flag(self):
+        from imagery import cli as cli_mod
+
+        captured = {}
+
+        def fake_run_monitor(config, progress=None):
+            captured["signer"] = config.signer
+            return mock.Mock(
+                scenes=[], records=[], rasters=[], composites=[],
+                report_path="r.md", timeseries_csv="t.csv", summary={},
+            )
+
+        orig = cli_mod.run_monitor
+        cli_mod.run_monitor = fake_run_monitor
+        self.addCleanup(setattr, cli_mod, "run_monitor", orig)
+        with tempfile.TemporaryDirectory() as d:
+            cfg = MonitorConfig(name="demo", aoi=from_bbox(-70, 43, -69, 44),
+                                collections=["sentinel-2-l2a"], indices=["ndvi"],
+                                output_dir=os.path.join(d, "out"))
+            path = os.path.join(d, "cfg.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(cfg.to_dict(), handle)
+            self.assertEqual(
+                cli_main(["monitor", "--config", path,
+                          "--signer", "planetary-computer"]), 0)
+        self.assertEqual(captured["signer"], "planetary-computer")
+
+    def test_monitor_signer_from_config_file(self):
+        from imagery import cli as cli_mod
+
+        captured = {}
+
+        def fake_run_monitor(config, progress=None):
+            captured["signer"] = config.signer
+            return mock.Mock(
+                scenes=[], records=[], rasters=[], composites=[],
+                report_path="r.md", timeseries_csv="t.csv", summary={},
+            )
+
+        orig = cli_mod.run_monitor
+        cli_mod.run_monitor = fake_run_monitor
+        self.addCleanup(setattr, cli_mod, "run_monitor", orig)
+        with tempfile.TemporaryDirectory() as d:
+            cfg = MonitorConfig(name="demo", aoi=from_bbox(-70, 43, -69, 44),
+                                collections=["sentinel-2-l2a"], indices=["ndvi"],
+                                output_dir=os.path.join(d, "out"),
+                                signer="planetary-computer")
+            path = os.path.join(d, "cfg.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(cfg.to_dict(), handle)
+            self.assertEqual(cli_main(["monitor", "--config", path]), 0)
+        self.assertEqual(captured["signer"], "planetary-computer")
+
 
 class TestPackageAPI(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(imagery.__version__, "0.1.0")
+        self.assertEqual(imagery.__version__, "0.1.1")
 
     def test_exports(self):
         for name in ["AOI", "Scene", "MonitorConfig", "compute",
                      "temporal_composite", "run_monitor", "write_cog",
-                     "style_qml", "as_grid", "search_scenes"]:
+                     "style_qml", "as_grid", "search_scenes",
+                     "resolve_signer", "planetary_computer_signer",
+                     "list_signers", "merge_records", "read_csv", "read_json",
+                     "clear_sign_cache"]:
             self.assertTrue(hasattr(imagery, name), name)
 
 

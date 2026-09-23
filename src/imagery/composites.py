@@ -9,6 +9,7 @@ cloud-free product for mapping and cartography.
 from __future__ import annotations
 
 from typing import List, Sequence
+import warnings
 
 import numpy as np
 
@@ -28,7 +29,10 @@ def temporal_composite(
     if len(shapes) != 1:
         raise ValueError(f"all arrays must share a shape, got {shapes}")
     stack = np.stack([np.asarray(a, dtype=np.float32) for a in arrays], axis=0)
-    with np.errstate(invalid="ignore"):
+    # All-NaN pixels are documented behaviour (stay NaN); silence NumPy's
+    # per-slice RuntimeWarning so batch jobs stay quiet.
+    with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+        warnings.simplefilter("ignore", RuntimeWarning)
         if method == "median":
             out = np.nanmedian(stack, axis=0)
         elif method == "mean":
@@ -42,10 +46,9 @@ def temporal_composite(
                 f"unknown composite method {method!r}; "
                 "use median, mean, max, or min"
             )
-    # nanmedian/nanmean warn and return NaN on all-NaN slices; suppress the
-    # warning by pre-checking is not needed for correctness. Ensure float32.
+    # Ensure float32 output (numpy < 1.22 nanmax on all-NaN raises; guarded
+    # above by the warning filter on supported versions).
     result = np.asarray(out, dtype=np.float32)
-    # numpy < 1.22 nanmax on all-NaN raises; guard for old versions.
     return result
 
 

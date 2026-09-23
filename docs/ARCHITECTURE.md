@@ -14,8 +14,10 @@
         ┌───────┘    │    │    │    └────────┐
         ▼            ▼    ▼    ▼             ▼
      stac.py  acquisition  indices/   timeseries    io.py / qgis.py
-              .py      preprocessing/
-                          composites.py
+              .py      preprocessing/   ▲
+              ▲       composites.py    │
+        signing.py ───┘                │  named SAS signer strategies,
+        (resolved before reads)        │  cached + retried signatures
         │            │    │                │
         └────────────┴────┴────────────────┘
                          ▼

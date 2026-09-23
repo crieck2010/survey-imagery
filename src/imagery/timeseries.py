@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -45,6 +45,36 @@ class SceneStats:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SceneStats":
+        """Rebuild a record from :meth:`to_dict` output (CSV/JSON rows).
+
+        Numeric fields are cast back from their serialised strings; an empty
+        cloud-cover cell becomes ``None``.
+        """
+        def _float(key: str) -> float:
+            return float(data[key])
+
+        def _int(key: str) -> int:
+            return int(float(data[key]))
+
+        cloud = data.get("cloud_cover")
+        return cls(
+            scene_id=str(data["scene_id"]),
+            datetime=str(data["datetime"]),
+            index=str(data["index"]),
+            mean=_float("mean"),
+            median=_float("median"),
+            std=_float("std"),
+            minimum=_float("minimum"),
+            maximum=_float("maximum"),
+            p10=_float("p10"),
+            p90=_float("p90"),
+            valid_pixels=_int("valid_pixels"),
+            total_pixels=_int("total_pixels"),
+            cloud_cover=None if cloud in (None, "") else float(cloud),
+        )
 
 
 def zonal_stats(
@@ -118,6 +148,44 @@ def write_json(records: Sequence[SceneStats], path: str) -> str:
     with open(path, "w", encoding="utf-8") as handle:
         json.dump([r.to_dict() for r in records], handle, indent=2)
     return path
+
+
+def read_csv(path: str) -> List[SceneStats]:
+    """Read a time series written by :func:`write_csv`."""
+    with open(path, newline="", encoding="utf-8") as handle:
+        return [SceneStats.from_dict(row) for row in csv.DictReader(handle)]
+
+
+def read_json(path: str) -> List[SceneStats]:
+    """Read a time series written by :func:`write_json`."""
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return [SceneStats.from_dict(row) for row in data]
+
+
+def merge_records(
+    existing: Sequence[SceneStats], new: Sequence[SceneStats]
+) -> List[SceneStats]:
+    """Merge a fresh monitor run into a stored series.
+
+    Records are keyed by ``(scene_id, index)``; a reprocessed scene replaces
+    its earlier record, so re-running a monitor over the same date window
+    never duplicates rows. The merged series is sorted by
+    ``(datetime, index, scene_id)``.
+    """
+    merged: Dict[Tuple[str, str], SceneStats] = {
+        (r.scene_id, r.index): r for r in existing
+    }
+    for record in new:
+        merged[(record.scene_id, record.index)] = record
+    return sorted(
+        merged.values(), key=lambda r: (r.datetime, r.index, r.scene_id)
+    )
+
+
+def series_fieldnames() -> List[str]:
+    """CSV column order for :class:`SceneStats` (used for header-only files)."""
+    return [f.name for f in fields(SceneStats)]
 
 
 def summarize(records: Sequence[SceneStats]) -> Dict[str, Any]:

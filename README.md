@@ -11,12 +11,12 @@ This is the satellite-data module of a larger surveying + remote sensing suite. 
 - **AOI model** — define a site once (bbox, GeoJSON, or WKT) and reuse it on every pass; bounds always normalised to lon/lat for catalog queries
 - **STAC discovery** — portable `/search` client with pagination, cloud-cover filtering, clearest-per-date deduplication, and sorting; no STAC client library needed
 - **Band aliases** — algorithms speak canonical names (`nir`, `red`, `swir1`) instead of mission asset keys (`B08`, `SR_B5`), so one NDVI routine runs on Sentinel-2, Landsat, or any future collection
-- **Acquisition** — windowed reads clipped to the AOI (never whole scenes), multi-resolution stack alignment to a common grid, optional URL signer hook for SAS-protected catalogs
+- **Acquisition** — windowed reads clipped to the AOI (never whole scenes), multi-resolution stack alignment to a common grid, named URL-signer strategies for SAS-protected catalogs (`planetary-computer` works straight from a JSON config)
 - **Preprocessing** — DN→reflectance scaling, Sentinel-2 SCL and Landsat QA_PIXEL cloud/shadow masks, NaN-honest masking
 - **Spectral indices** — NDVI, EVI, SAVI, NDWI, NDMI, NDBI, NBR, BSI via a registry that declares each index's band requirements
 - **Composites** — NaN-aware median/mean/max/min temporal composites plus per-pixel observation counts and best-scene tracking
 - **Time series** — per-scene zonal statistics inside the AOI → CSV/JSON for dashboards and QGIS joins
-- **Site monitor** — one JSON config drives search → process → COG + QML style → `timeseries.csv` → Markdown report; re-run with a later end date to refresh
+- **Site monitor** — one JSON config drives search → process → COG + QML style → `timeseries.csv` → Markdown report; re-runs merge new scenes into the same series (no duplicates) and can write per-index temporal composites
 - **QGIS support** — generated `.qml` layer styles for every index, plus usage notes
 - **Suite interop** — interchange grid dict shared with `survey-raster`, duck-typed CRS acceptance from `survey-geodesy`, XYZ sampling for `survey-pointcloud`-style analysis
 
@@ -76,6 +76,20 @@ print("mean NDVI:", float(ndvi[ndvi == ndvi].mean()))
 # Write a config (see examples/monitor_config.json), then:
 survey-imagery monitor --config examples/monitor_config.json
 
+# For SAS-protected catalogs like Planetary Computer, either put
+# "signer": "planetary-computer" in the config or pass it on the CLI:
+survey-imagery monitor --config examples/monitor_config.json \
+    --signer planetary-computer
+```
+
+Re-running a monitor with a later end date appends new scenes to the same
+`timeseries.csv` — records are keyed by `(scene_id, index)`, so repeats and
+reprocessed scenes replace their earlier rows instead of duplicating them.
+Set `"composite": true` in the config to also write a per-index median
+temporal composite (`<site>_<index>_composite_<start>_<end>.tif`) over the
+grid-compatible scenes.
+
+```bash
 # Search scenes without processing:
 survey-imagery search --bbox -70.12 43.65 -70.02 43.72 \
     --collection sentinel-2-l2a --start 2026-08-01 --end 2026-09-01 \
@@ -97,6 +111,7 @@ output/
 └── rasters/
     ├── <site>_ndvi_2026-08-15.tif   # Cloud-Optimized GeoTIFF
     ├── <site>_ndvi_2026-08-15.qml   # QGIS style sidecar
+    ├── <site>_ndvi_composite_2026-06-01_2026-09-01.tif  # if "composite": true
     └── ...
 ```
 
@@ -136,6 +151,7 @@ src/imagery/
 ├── preprocessing.py  # reflectance scaling, SCL/QA_PIXEL cloud masks
 ├── indices.py        # spectral index registry (NDVI, EVI, …)
 ├── composites.py     # temporal compositing
+├── signing.py        # named URL-signer strategies (Planetary Computer SAS)
 ├── timeseries.py     # zonal stats → CSV/JSON series
 ├── monitor.py        # per-pass site monitor pipeline
 ├── io.py             # Cloud-Optimized GeoTIFF / GeoJSON / report writers
