@@ -67,7 +67,12 @@ COLLECTIONS: Dict[str, Dict] = {
             "B11": 20, "B12": 20, "SCL": 20,
         },
         "scale": 0.0001,
-        "offset": 0.0,
+        # Collection 1 offset: current Sentinel-2 L2A products use -0.1
+        # (verified against live STAC raster:bands metadata on Earth Search
+        # ``sentinel-2-c1-l2a`` / ``sentinel-2-pre-c1-l2a``). Legacy
+        # products used offset 0. Reflectance off by 0.1 in absolute units
+        # otherwise — catastrophic for indices.
+        "offset": -0.1,
         "cloud_cover_field": "eo:cloud_cover",
         "mask_alias": "scl",
     },
@@ -93,6 +98,19 @@ COLLECTIONS: Dict[str, Dict] = {
         },
         "scale": 0.0000275,
         "offset": -0.2,
+        # Per-asset scale/offset overrides keyed by canonical alias. Thermal
+        # assets (ST_B10) are Kelvin, NOT reflectance: scale 0.00341802,
+        # offset +149 K (verified against live STAC raster:bands metadata
+        # for landsat-c2-l2). They must never pass through to_reflectance.
+        "asset_scales": {
+            "tirs1": (0.00341802, 149.0),
+            "tirs2": (0.00341802, 149.0),
+        },
+        # Output physical unit per alias; default is "reflectance".
+        "asset_units": {
+            "tirs1": "kelvin",
+            "tirs2": "kelvin",
+        },
         "cloud_cover_field": "eo:cloud_cover",
         "mask_alias": "qa_pixel",
     },
@@ -161,6 +179,43 @@ def assets_for(collection: str, aliases: Sequence[str]) -> Dict[str, str]:
 def reflectance_scale_offset(collection: str) -> Tuple[float, float]:
     info = collection_info(collection)
     return (float(info["scale"]), float(info["offset"]))
+
+
+def asset_scale_offset(collection: str, alias: str) -> Tuple[float, float]:
+    """(scale, offset) for one band alias, honoring per-asset overrides.
+
+    Falls back to the collection default (:func:`reflectance_scale_offset`)
+    when the alias has no override in ``asset_scales``. Use this instead of
+    the collection default whenever you convert a single band — e.g. the
+    Landsat thermal alias ``tirs1`` needs (0.00341802, 149.0), not the
+    reflectance pair (0.0000275, -0.2).
+    """
+    info = collection_info(collection)
+    overrides = info.get("asset_scales") or {}
+    if alias in overrides:
+        scale, offset = overrides[alias]
+        return (float(scale), float(offset))
+    try:
+        key = asset_key(collection, alias)
+    except BandError:
+        key = None
+    if key is not None and key in overrides:
+        scale, offset = overrides[key]
+        return (float(scale), float(offset))
+    return reflectance_scale_offset(collection)
+
+
+def asset_unit(collection: str, alias: str) -> str:
+    """Physical unit of a converted band alias: ``"kelvin"`` or ``"reflectance"``.
+
+    Thermal aliases (Landsat ``tirs1``/``tirs2``) are Kelvin and must be
+    routed through :func:`imagery.preprocessing.to_kelvin`, never
+    :func:`imagery.preprocessing.to_reflectance` (whose [0, 1] clip would
+    destroy temperature data).
+    """
+    info = collection_info(collection)
+    units = info.get("asset_units") or {}
+    return str(units.get(alias, "reflectance"))
 
 
 def native_resolution_m(collection: str, alias: str) -> Optional[float]:

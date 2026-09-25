@@ -19,7 +19,7 @@ Pass any of these as `--api` / `api_url`. The `Scene.assets` hrefs are used verb
 | `sentinel-2-l2a` | Sentinel-2A/2B MSI | 10/20/60 m | ~5 days | 2015– |
 | `landsat-c2-l2` | Landsat 8/9 OLI/TIRS | 30 m (15 m pan) | ~8 days combined | 2013– (program back to the 1980s) |
 
-Both are **Level-2 surface reflectance** — atmospherically corrected, analysis-ready. The engine applies each collection's documented scale/offset (`bands.reflectance_scale_offset`).
+Both are **Level-2 surface reflectance** — atmospherically corrected, analysis-ready. The engine applies each collection's documented scale/offset (`bands.reflectance_scale_offset`), with per-asset overrides for thermal bands and Collection-1 offsets (`bands.asset_scale_offset`). Where a STAC item carries its own `raster:bands` scale/offset, the item metadata wins (`stac.asset_scale_offset_from_scene`).
 
 ## Why not Google Earth Engine?
 

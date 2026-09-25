@@ -39,6 +39,10 @@ class Scene:
     cloud_cover: Optional[float]
     bbox: Sequence[float]
     assets: Dict[str, str]  # canonical alias -> href
+    # Per-asset (scale, offset) harvested from each asset's ``raster:bands``
+    # entry at parse time (alias -> (scale, offset)). Preferred over the
+    # registry defaults when present — see asset_scale_offset_from_scene().
+    asset_scales: Dict[str, tuple] = field(default_factory=dict)
     properties: Dict[str, Any] = field(default_factory=dict)
 
     def href(self, alias: str) -> str:
@@ -60,6 +64,9 @@ class Scene:
             "cloud_cover": self.cloud_cover,
             "bbox": list(self.bbox),
             "assets": dict(self.assets),
+            "asset_scales": {
+                k: [v[0], v[1]] for k, v in (self.asset_scales or {}).items()
+            },
             "properties": dict(self.properties),
         }
 
@@ -91,6 +98,59 @@ def build_search_payload(
     return payload
 
 
+def _asset_scales_from_item(
+    item: Dict[str, Any], asset_map: Dict[str, str]
+) -> Dict[str, tuple]:
+    """Harvest per-asset (scale, offset) from a STAC item's ``raster:bands``.
+
+    Maps canonical alias -> (scale, offset) for assets that carry
+    ``raster:bands`` metadata. Partial entries (only scale, or only offset)
+    are kept as-is; missing halves are resolved from the registry in
+    :func:`asset_scale_offset_from_scene`.
+    """
+    out: Dict[str, tuple] = {}
+    item_assets = item.get("assets") or {}
+    for alias, key in asset_map.items():
+        entry = item_assets.get(key) or {}
+        bands = entry.get("raster:bands") or []
+        for band in bands:
+            if not isinstance(band, dict):
+                continue
+            scale, offset = band.get("scale"), band.get("offset")
+            if scale is not None or offset is not None:
+                out[alias] = (scale, offset)
+                break
+    return out
+
+
+def asset_scale_offset_from_scene(
+    scene: "Scene", alias: str, prefer_metadata: bool = True
+) -> tuple:
+    """(scale, offset) for one band alias on a :class:`Scene`.
+
+    With ``prefer_metadata=True`` (default), per-asset values harvested from
+    the item's own ``raster:bands`` entries win over the registry in
+    :mod:`imagery.bands` — the right choice when feeding real catalog data,
+    since STAC items are the source of truth. Missing halves fall back to
+    the registry's :func:`~imagery.bands.asset_scale_offset`. Pass
+    ``prefer_metadata=False`` to force registry values (reproducibility,
+    unit tests against synthetic fixtures).
+    """
+    from .bands import asset_scale_offset
+
+    reg_scale, reg_offset = asset_scale_offset(scene.collection, alias)
+    if not prefer_metadata:
+        return (reg_scale, reg_offset)
+    meta = (scene.asset_scales or {}).get(alias)
+    if not meta:
+        return (reg_scale, reg_offset)
+    meta_scale, meta_offset = meta
+    return (
+        float(meta_scale) if meta_scale is not None else reg_scale,
+        float(meta_offset) if meta_offset is not None else reg_offset,
+    )
+
+
 def _item_to_scene(item: Dict[str, Any]) -> Scene:
     collection = item.get("collection", "")
     info = collection_info(collection) if collection else {}
@@ -117,6 +177,7 @@ def _item_to_scene(item: Dict[str, Any]) -> Scene:
         cloud_cover=cloud_cover,
         bbox=item.get("bbox") or [],
         assets=assets,
+        asset_scales=_asset_scales_from_item(item, asset_map),
         properties=dict(props),
     )
 

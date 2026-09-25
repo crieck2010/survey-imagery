@@ -22,10 +22,10 @@ from .acquisition import AcquisitionError, BandData, read_band, read_stack
 from .aoi import AOI
 from .bands import (
     asset_key,
+    asset_unit,
     assets_for,
     collection_info,
     mask_alias,
-    reflectance_scale_offset,
 )
 from .composites import temporal_composite
 from .indices import compute, list_indices, required_bands
@@ -34,12 +34,19 @@ from .preprocessing import (
     apply_mask,
     clear_fraction,
     mask_for_collection,
+    to_kelvin,
     to_reflectance,
     valid_fraction,
 )
 from .qgis import list_styles, write_style_qml
 from .signing import SignerSpec, SigningError, resolve_signer
-from .stac import Scene, filter_max_cloud, latest_per_date, search_scenes
+from .stac import (
+    Scene,
+    asset_scale_offset_from_scene,
+    filter_max_cloud,
+    latest_per_date,
+    search_scenes,
+)
 from .timeseries import (
     SceneStats,
     merge_records,
@@ -164,8 +171,19 @@ def process_scene(
         collection=collection,
         signer=resolve_signer(config.signer),
     )
-    scale, offset = reflectance_scale_offset(collection)
-    refl = {a: to_reflectance(b.data, scale, offset) for a, b in stack.items()}
+    # Reflectance-vs-Kelvin routing per alias. Thermal aliases (Landsat
+    # tirs1/tirs2) convert DN -> K via to_kelvin with NO [0, 1] clip;
+    # reflectance aliases keep to_reflectance. Per-asset scale / offset come
+    # from the STAC item's own raster:bands metadata when present, else the
+    # bands registry.
+    conv: Dict[str, np.ndarray] = {}
+    for a, b in stack.items():
+        scale, offset = asset_scale_offset_from_scene(scene, a)
+        if asset_unit(collection, a) == "kelvin":
+            conv[a] = to_kelvin(b.data, scale, offset)
+        else:
+            conv[a] = to_reflectance(b.data, scale, offset)
+    refl = conv
 
     clear = None
     if mask and mask in refl:

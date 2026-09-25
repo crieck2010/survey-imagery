@@ -2,6 +2,29 @@
 
 All notable changes to `survey-imagery`. Follows semantic versioning.
 
+## [0.1.2] - 2026-09-25
+### Fixed
+- **Sentinel-2 L2A offset (data bug):** `sentinel-2-l2a` registry used
+  offset `0.0`; current Collection 1 products use scale 0.0001,
+  **offset -0.1** (verified against live STAC `raster:bands` metadata).
+  Reflectance was off by 0.1 in absolute units — catastrophic for indices.
+- **Landsat thermal handled as reflectance (data bug):** the monitor
+  applied one scale/offset (0.0000275/-0.2) plus `[0, 1]` clipping to *all*
+  assets. Thermal aliases `tirs1`/`tirs2` (ST_B10) are Kelvin and now route
+  through the new `preprocessing.to_kelvin()` with scale 0.00341802,
+  offset +149 K and no clipping.
+### Added
+- `bands.asset_scale_offset(collection, alias)` — per-asset override with
+  collection-default fallback; `bands.asset_unit(collection, alias)` —
+  `"kelvin"` for thermal aliases, `"reflectance"` otherwise.
+- `preprocessing.to_kelvin(data, scale, offset)` — NaN-safe DN→K, no clip.
+- `stac.asset_scale_offset_from_scene(scene, alias, prefer_metadata=True)` —
+  reads per-asset `raster:bands` scale/offset from the STAC item JSON when
+  present, else the registry; `Scene.asset_scales` carries the harvested
+  metadata through the pipeline.
+- Regression tests for the S2 offset, the ST_B10 thermal path, and
+  metadata-vs-registry scaling precedence.
+
 ## [0.1.1] - 2026-09-23
 ### Added
 - `signing`: named URL-signer strategies (`imagery.signing`). `planetary-computer`

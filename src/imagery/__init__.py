@@ -14,10 +14,13 @@ from .bands import (
     SENSORS,
     STAC_APIS,
     asset_key,
+    asset_scale_offset,
+    asset_unit,
     assets_for,
     collection_info,
     list_aliases,
     list_collections,
+    reflectance_scale_offset,
 )
 from .composites import (
     best_scene_index,
@@ -53,12 +56,14 @@ from .preprocessing import (
     cloud_mask_qa_pixel,
     cloud_mask_scl,
     mask_for_collection,
+    to_kelvin,
     to_reflectance,
     valid_fraction,
 )
 from .qgis import list_styles, qgis_usage_notes, style_qml, write_style_qml
 from .stac import (
     Scene,
+    asset_scale_offset_from_scene,
     filter_max_cloud,
     latest_per_date,
     search,
@@ -77,7 +82,7 @@ from .timeseries import (
     zonal_stats,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "__version__",
@@ -85,12 +90,13 @@ __all__ = [
     "AOI", "buffer_degrees", "from_bbox", "from_geojson", "from_geojson_string",
     # bands
     "BAND_ALIASES", "COLLECTIONS", "SENSORS", "STAC_APIS",
-    "asset_key", "assets_for", "collection_info", "list_aliases", "list_collections",
+    "asset_key", "asset_scale_offset", "asset_unit", "assets_for", "collection_info",
+    "list_aliases", "list_collections",
     # acquisition
     "BandData", "read_band", "read_stack",
     # preprocessing
     "apply_mask", "clear_fraction", "cloud_mask_qa_pixel", "cloud_mask_scl",
-    "mask_for_collection", "to_reflectance", "valid_fraction",
+    "mask_for_collection", "to_kelvin", "to_reflectance", "valid_fraction",
     # indices
     "INDEX_REGISTRY", "compute", "describe_index", "list_indices", "required_bands",
     # composites
@@ -99,8 +105,8 @@ __all__ = [
     "SceneStats", "merge_records", "read_csv", "read_json", "series_fieldnames",
     "summarize", "write_csv", "write_json", "zonal_stats",
     # stac
-    "Scene", "filter_max_cloud", "latest_per_date", "search", "search_scenes",
-    "sort_scenes",
+    "Scene", "asset_scale_offset_from_scene", "filter_max_cloud", "latest_per_date",
+    "search", "search_scenes", "sort_scenes",
     # io
     "ensure_dir", "write_cog", "write_geojson", "write_multiband_cog", "write_text",
     # qgis

@@ -17,12 +17,14 @@ Public API is re-exported from `imagery` (`src/imagery/__init__.py`). Import fro
 - `list_collections()`, `list_aliases(collection=None)`, `collection_info(name)`.
 - `asset_key(collection, alias)`, `assets_for(collection, aliases)`.
 - `reflectance_scale_offset(collection)` → `(scale, offset)`.
+- `asset_scale_offset(collection, alias)` → per-asset `(scale, offset)` honoring
+  thermal overrides; `asset_unit(collection, alias)` → `"kelvin"`/`"reflectance"`.
 - `native_resolution_m(collection, alias)`, `mask_alias(collection)`, `describe_alias(alias)`.
 - `BandError` on unknown collections/aliases.
 
 ## `imagery.stac` — scene discovery
 
-- `Scene` — `id`, `collection`, `datetime`, `cloud_cover`, `bbox`, `assets` (alias → href); `.href(alias)`, `.has_aliases([...])`, `.to_dict()`.
+- `Scene` — `id`, `collection`, `datetime`, `cloud_cover`, `bbox`, `assets` (alias → href), `asset_scales` (alias → per-asset `(scale, offset)` harvested from `raster:bands`); `.href(alias)`, `.has_aliases([...])`, `.to_dict()`.
 - `search_scenes(api_url, collections, aoi, start, end, max_cloud_cover=None, limit=100, require_aliases=None)` → sorted `Scene` list.
 - `search(api_url, payload, ...)` — raw payload execution with `next`-link pagination.
 - `build_search_payload(collections, bbox_lonlat, datetime_range, max_cloud_cover, limit)`.
@@ -39,7 +41,9 @@ Public API is re-exported from `imagery` (`src/imagery/__init__.py`). Import fro
 
 ## `imagery.preprocessing`
 
-- `to_reflectance(data, scale=0.0001, offset=0.0)` — DN → [0, 1] surface reflectance.
+- `to_reflectance(data, scale=0.0001, offset=-0.1)` — DN → [0, 1] surface reflectance (Sentinel-2 Collection 1 defaults).
+- `to_kelvin(data, scale=0.00341802, offset=149.0)` — DN → Kelvin for thermal
+  aliases (`tirs1`/`tirs2`); no [0, 1] clipping.
 - `cloud_mask_scl(scl, clear_classes=SCL_CLEAR)` / `cloud_mask_qa_pixel(qa)` → boolean clear-sky masks; `mask_for_collection(collection, mask_band)` dispatches.
 - `apply_mask(data, clear_mask)`, `clear_fraction(mask)`, `valid_fraction(data)`.
 - SCL class constants (`SCL_VEGETATION`, `SCL_CLOUD_HIGH`, …).

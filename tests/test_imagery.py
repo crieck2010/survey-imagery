@@ -681,9 +681,9 @@ class TestInterop(unittest.TestCase):
 
 class TestMonitor(unittest.TestCase):
     def _scene(self, tmpdir, scene_id="S2_TEST", dt="2026-06-01T10:00:00Z"):
-        red = _temp_tif(np.full((10, 10), 2000, dtype=np.uint16),
+        red = _temp_tif(np.full((10, 10), 3000, dtype=np.uint16),
                         (0.001, 0.0, -70.0, 0.0, -0.001, 44.0))
-        nir = _temp_tif(np.full((10, 10), 6000, dtype=np.uint16),
+        nir = _temp_tif(np.full((10, 10), 7000, dtype=np.uint16),
                         (0.001, 0.0, -70.0, 0.0, -0.001, 44.0))
         scl = _temp_tif(np.full((10, 10), 4, dtype=np.uint8),
                         (0.001, 0.0, -70.0, 0.0, -0.001, 44.0))
@@ -744,6 +744,7 @@ class TestMonitor(unittest.TestCase):
             self.assertEqual(len(result.records), 1)
             rec = result.records[0]
             # refl: red 0.2, nir 0.6 -> ndvi 0.5
+            # (DN 3000/7000 with Collection-1 offset -0.1)
             self.assertAlmostEqual(rec.mean, 0.5, places=4)
             self.assertTrue(os.path.exists(result.timeseries_csv))
             self.assertTrue(os.path.exists(result.report_path))
@@ -1034,7 +1035,7 @@ class TestCLI(unittest.TestCase):
 
 class TestPackageAPI(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(imagery.__version__, "0.1.1")
+        self.assertEqual(imagery.__version__, "0.1.2")
 
     def test_exports(self):
         for name in ["AOI", "Scene", "MonitorConfig", "compute",
@@ -1042,8 +1043,109 @@ class TestPackageAPI(unittest.TestCase):
                      "style_qml", "as_grid", "search_scenes",
                      "resolve_signer", "planetary_computer_signer",
                      "list_signers", "merge_records", "read_csv", "read_json",
-                     "clear_sign_cache"]:
+                     "clear_sign_cache", "asset_scale_offset", "asset_unit",
+                     "to_kelvin", "asset_scale_offset_from_scene"]:
             self.assertTrue(hasattr(imagery, name), name)
+
+
+class TestThermalScaling(unittest.TestCase):
+    """Regression tests for the radiometric-scaling audit (2026-09-25)."""
+
+    def test_sentinel2_collection1_offset(self):
+        # Collection 1: offset -0.1, not legacy 0.
+        scale, offset = bands_mod.reflectance_scale_offset("sentinel-2-l2a")
+        self.assertAlmostEqual(scale, 0.0001)
+        self.assertAlmostEqual(offset, -0.1)
+        # DN 10000 -> 0.9 reflectance; DN 1000 -> 0.0 (was 0.1 with offset 0).
+        out = preprocessing_mod.to_reflectance(
+            np.array([[10000, 1000]], dtype=np.float32), scale, offset
+        )
+        self.assertAlmostEqual(float(out[0, 0]), 0.9, places=5)
+        self.assertAlmostEqual(float(out[0, 1]), 0.0, places=5)
+
+    def test_landsat_thermal_asset_override(self):
+        scale, offset = bands_mod.asset_scale_offset("landsat-c2-l2", "tirs1")
+        self.assertAlmostEqual(scale, 0.00341802)
+        self.assertAlmostEqual(offset, 149.0)
+
+    def test_landsat_reflectance_alias_uses_collection_default(self):
+        scale, offset = bands_mod.asset_scale_offset("landsat-c2-l2", "red")
+        self.assertAlmostEqual(scale, 0.0000275)
+        self.assertAlmostEqual(offset, -0.2)
+
+    def test_sentinel2_alias_uses_collection_default(self):
+        scale, offset = bands_mod.asset_scale_offset("sentinel-2-l2a", "red")
+        self.assertAlmostEqual(scale, 0.0001)
+        self.assertAlmostEqual(offset, -0.1)
+
+    def test_asset_unit(self):
+        self.assertEqual(bands_mod.asset_unit("landsat-c2-l2", "tirs1"), "kelvin")
+        self.assertEqual(bands_mod.asset_unit("landsat-c2-l2", "tirs2"), "kelvin")
+        self.assertEqual(
+            bands_mod.asset_unit("landsat-c2-l2", "red"), "reflectance"
+        )
+        self.assertEqual(
+            bands_mod.asset_unit("sentinel-2-l2a", "nir"), "reflectance"
+        )
+
+    def test_to_kelvin_known_value(self):
+        # DN 50000 -> 50000 * 0.00341802 + 149 ~= 319.901 K
+        out = preprocessing_mod.to_kelvin(
+            np.array([[50000]], dtype=np.float32)
+        )
+        self.assertAlmostEqual(float(out[0, 0]), 319.901, places=2)
+
+    def test_to_kelvin_not_clipped(self):
+        # Kelvin values >> 1 must survive; to_reflectance would clip them.
+        out = preprocessing_mod.to_kelvin(np.array([[65000]], dtype=np.float32))
+        self.assertGreater(float(out[0, 0]), 300.0)
+
+    def test_to_kelvin_nan_safe(self):
+        out = preprocessing_mod.to_kelvin(np.array([[np.nan]], dtype=np.float32))
+        self.assertTrue(np.isnan(out[0, 0]))
+
+    def _landsat_thermal_item(self):
+        return {
+            "id": "LC09_test",
+            "collection": "landsat-c2-l2",
+            "bbox": [-70, 43, -69, 44],
+            "properties": {"datetime": "2026-06-01T15:00:00Z", "eo:cloud_cover": 5.0},
+            "assets": {
+                "ST_B10": {
+                    "href": "https://example.com/ST_B10.tif",
+                    "raster:bands": [
+                        {"scale": 0.00341802, "offset": 149.0, "nodata": 0}
+                    ],
+                },
+                "SR_B4": {"href": "https://example.com/SR_B4.tif"},
+            },
+        }
+
+    def test_item_to_scene_harvests_raster_bands(self):
+        scene = stac_mod._item_to_scene(self._landsat_thermal_item())
+        self.assertEqual(scene.asset_scales["tirs1"], (0.00341802, 149.0))
+
+    def test_scene_scaling_prefers_metadata(self):
+        scene = stac_mod._item_to_scene(self._landsat_thermal_item())
+        scale, offset = stac_mod.asset_scale_offset_from_scene(scene, "tirs1")
+        self.assertAlmostEqual(scale, 0.00341802)
+        self.assertAlmostEqual(offset, 149.0)
+
+    def test_scene_scaling_registry_fallback(self):
+        scene = stac_mod._item_to_scene(self._landsat_thermal_item())
+        # SR_B4 has no raster:bands -> registry default.
+        scale, offset = stac_mod.asset_scale_offset_from_scene(scene, "red")
+        self.assertAlmostEqual(scale, 0.0000275)
+        self.assertAlmostEqual(offset, -0.2)
+
+    def test_scene_scaling_prefer_metadata_false(self):
+        scene = stac_mod._item_to_scene(self._landsat_thermal_item())
+        scale, offset = stac_mod.asset_scale_offset_from_scene(
+            scene, "tirs1", prefer_metadata=False
+        )
+        # Registry override (identical here) wins regardless of metadata.
+        self.assertAlmostEqual(scale, 0.00341802)
+        self.assertAlmostEqual(offset, 149.0)
 
 
 if __name__ == "__main__":

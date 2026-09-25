@@ -42,6 +42,13 @@ def to_reflectance(
 
     NaN input stays NaN. Values are clipped to the physical [0, 1] range
     after scaling, which also discards saturated-sensor artefacts.
+
+    The generic defaults are legacy Sentinel-2 values; do not rely on them
+    for real products — current Sentinel-2 L2A (Collection 1) uses offset
+    -0.1, and every collection/alias pair has its own documented pair.
+    Use :func:`imagery.bands.asset_scale_offset` (or the per-asset STAC
+    metadata via :func:`imagery.stac.asset_scale_offset_from_scene`) to get
+    the right constants. Thermal aliases must use :func:`to_kelvin` instead.
     """
     arr = np.asarray(data, dtype=np.float32)
     with np.errstate(invalid="ignore"):
@@ -49,6 +56,23 @@ def to_reflectance(
     refl = np.clip(refl, 0.0, 1.0)
     refl[~np.isfinite(arr)] = np.nan
     return refl.astype(np.float32)
+
+
+def to_kelvin(
+    data: np.ndarray, scale: float = 0.00341802, offset: float = 149.0
+) -> np.ndarray:
+    """Convert stored thermal digital numbers to Kelvin (float32).
+
+    Defaults are the verified Landsat Collection 2 ST constants
+    (``K = DN * 0.00341802 + 149``). Unlike :func:`to_reflectance` there is
+    NO [0, 1] clipping — temperatures routinely exceed 1 in Kelvin and
+    clipping would silently destroy the data. NaN input stays NaN.
+    """
+    arr = np.asarray(data, dtype=np.float32)
+    with np.errstate(invalid="ignore"):
+        kelvin = arr * np.float32(scale) + np.float32(offset)
+    kelvin[~np.isfinite(arr)] = np.nan
+    return kelvin.astype(np.float32)
 
 
 def cloud_mask_scl(
