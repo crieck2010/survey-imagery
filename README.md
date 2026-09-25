@@ -1,5 +1,12 @@
 # survey-imagery
 
+> **Part of [earthwatch-suite](https://github.com/crieck2010/earthwatch-suite)** —
+> the remote-sensing project (satellite imagery, change detection, site
+> monitoring). Terrestrial surveying lives in
+> [survey-suite](https://github.com/crieck2010/survey-suite); the two stay
+> compatible through the
+> [cross-suite contracts](https://github.com/crieck2010/earthwatch-suite/blob/main/docs/CONTRACTS.md).
+
 A pure-logic **satellite imagery engine** for surveying and remote sensing: STAC scene discovery, windowed AOI-clipped acquisition, cloud masking, spectral indices, temporal composites, per-pass time series, and an automated **site monitor** that refreshes its outputs with every satellite pass.
 
 This is the satellite-data module of a larger surveying + remote sensing suite. It is engine-only on purpose — no UI framework imports anywhere — so it can be imported by scripts, wrapped in a desktop app, driven from the CLI, or (next step) exposed as QGIS Processing algorithms. Every raster product is a Cloud-Optimized GeoTIFF that opens directly in QGIS.
